@@ -11,6 +11,15 @@ import numpy
 import gzip
 from functools import partial
 
+META_INFO = {
+    'version'     : '0.0.1',
+    'license'     : 'Apache License 2.0',
+    'author'      : 'EBI',
+    'url'         : 'https://github.com/EGA-archive/ont2cram',
+    'keywords'    : 'ONT HDF Fast5 CRAM',
+    'description' : 'Oxford Nanopore HDF/Fast5 to CRAM conversion tool'
+}
+
 FIRST_TAG    	   = "a0"
 LAST_TAG     	   = "zZ"
 FILENAME_TAG 	   = "X0"
@@ -206,9 +215,9 @@ def read_fastq_from_file(fn):
         lines = f.read().splitlines()
         if len(lines)%4 > 0: sys.exit("Invalid FASTQ file: '{}'".format(fn))
         for i in range(0,len(lines),4):
-            yield lines[i].split()[0][1:], lines[i+1]
+            yield lines[i].split()[0][1:], lines[i+1], lines[i+3]
 
-def write_cram(fast5_files, cram_file, skipsignal, fastq_map):
+def write_cram(fast5_base_dir, fast5_files, cram_file, skipsignal, fastq_map):
     total_fast5_files = len(fast5_files)
     comments_list = []
     tag = Tag(FIRST_TAG)
@@ -308,7 +317,7 @@ def write_cram(fast5_files, cram_file, skipsignal, fastq_map):
 
                 for read_group in read_groups:
                 	a_s = pysam.AlignedSegment()
-                	a_s.set_tag( FILENAME_TAG, os.path.basename(filename) )
+                	a_s.set_tag( FILENAME_TAG, os.path.relpath(filename,fast5_base_dir) )
 
                 	read_id    = None
                 	fastq_path = None
@@ -322,19 +331,20 @@ def write_cram(fast5_files, cram_file, skipsignal, fastq_map):
                 	    if not read_id:
                 	        sys.exit("Could not find read_id attribute in :'{}', group='{}'".format(filename,read_group.name))
                 	    fastq_lines[0] = '@'+bytes_to_str(read_id)
-                	    fastq_lines[1] = fastq_map[read_id]
-
+                	    fastq_lines[1],fastq_lines[3] = fastq_map[read_id]
+                	    
                 	a_s.query_name = fastq_lines[0]
                 	a_s.query_sequence=fastq_lines[1]
                 	a_s.query_qualities = pysam.qualitystring_to_array(fastq_lines[3])
                 	a_s.flag = 4
-                	a_s.reference_id = 0
+                	a_s.reference_id = -1
                 	a_s.reference_start = 0
                 	a_s.mapping_quality = 0
                 	a_s.cigar = ()
-                	a_s.next_reference_id = 0
+                	a_s.next_reference_id = -1
                 	a_s.next_reference_start=0
                 	a_s.template_length=0
+                	a_s.is_unmapped = True
 
                 	outf.write(a_s)
 
@@ -342,8 +352,9 @@ def load_fastq(dir):
     print("Loading FASTQ from: '{}'".format(os.path.abspath(dir)) )		
     map = {}
     for f in tqdm.tqdm( list_files(dir,lambda f:".fastq" in f) ):
-        for read_id,read_fastq in read_fastq_from_file(f):
-            map[read_id] = read_fastq
+        for read_id,seq,qual in read_fastq_from_file(f):
+            #print(f"read_id={read_id}, type={type(read_id)}")
+            map[str.encode(read_id)] = (seq,qual)
     return map
 
 def exit_if_not_dir(d):
@@ -364,13 +375,14 @@ def run(input_dir, fastq_dir, output_file, skip_signal):
         walk_fast5( f, pre_process_group_attrs )
 
     print("Writing CRAM to: '{}'".format(os.path.abspath(output_file)))
-    write_cram( fast5_files, output_file, skip_signal, fastq_map )
+    write_cram( input_dir, fast5_files, output_file, skip_signal, fastq_map )
 
     global_dict_attributes.clear()
     
 
 def main():
-    parser = argparse.ArgumentParser(description='Fast5 to CRAM conversion utility')
+    print("ont2cram (version {})".format(META_INFO['version']))
+    parser = argparse.ArgumentParser(description=META_INFO['description'])
     parser.add_argument('-i','--inputdir', help='Input directory containing Fast5 files', required=True)
     parser.add_argument('-o','--outputfile', help='Output CRAM filename', required=True)
     parser.add_argument('-f','--fastqdir', help='Input directory containing FASTQ files', required=False)
